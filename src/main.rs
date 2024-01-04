@@ -2,10 +2,14 @@ use std::sync::Arc;
 
 use ledger::eth::evm::revm::Revm;
 use ledger::eth::rpc::serve_rpc;
-use ledger::eth::storage::inmemory::InMemoryStorage;
+use ledger::eth::storage::impls::inmemory::InMemoryStorage;
+use ledger::eth::storage::impls::redis::RedisStorage;
 use ledger::eth::storage::EthStorage;
 use ledger::eth::EthExecutor;
 use ledger::infra;
+
+use clap::Parser;
+use ledger::config::{Config, Storage};
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
@@ -13,11 +17,22 @@ async fn main() -> eyre::Result<()> {
     infra::init_tracing();
     infra::init_metrics();
 
-    // init services
-    let storage: Arc<dyn EthStorage> = Arc::new(InMemoryStorage::default());
-    let evm = Box::new(Revm::new(Arc::clone(&storage)));
-    let executor = EthExecutor::new(evm, Arc::clone(&storage));
+    let cfg = Config::parse();
 
-    serve_rpc(executor, storage).await?;
+    // init services
+    let eth_storage: Arc<dyn EthStorage> = match cfg.storage {
+        Storage::InMemory => Arc::new(InMemoryStorage::default()),
+        Storage::Redis => {
+            let url = cfg.redis_url;
+            let redis = Arc::new(RedisStorage::new(&url).await?);
+            let eth_storage = Arc::clone(&redis) as Arc<dyn EthStorage>;
+            eth_storage
+        }
+    };
+
+    let evm = Box::new(Revm::new(Arc::clone(&eth_storage)));
+    let executor = EthExecutor::new(evm, Arc::clone(&eth_storage));
+
+    serve_rpc(executor, eth_storage).await?;
     Ok(())
 }
